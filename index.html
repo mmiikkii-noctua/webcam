@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>PhoneCam</title>
+<style>
+html,body{margin:0;height:100%;background:#000;color:#eee;font:16px system-ui,sans-serif}
+#rv,#lv{width:100%;height:100%;object-fit:contain;background:#000}
+#ui{position:fixed;left:0;right:0;top:0;padding:12px;background:#000c;text-align:center}
+#ui.min{display:none}
+button{background:#2a6df4;color:#fff;border:0;border-radius:8px;padding:12px 18px;font-size:17px;margin:4px}
+#qr{display:inline-block;background:#fff;padding:8px;border-radius:8px;margin:8px}
+input{width:90%;font-size:12px;padding:6px}
+small{opacity:.8}#st{position:fixed;bottom:6px;left:8px;font-size:12px;opacity:.8}
+</style></head><body>
+<video id="rv" autoplay playsinline muted></video>
+<video id="lv" autoplay playsinline muted style="display:none"></video>
+<div id="ui"></div><div id="st"></div>
+<script src="https://cdn.jsdelivr.net/npm/peerjs@1.5.4/dist/peerjs.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+<script>
+const $=id=>document.getElementById(id), q=new URLSearchParams(location.search);
+const st=t=>$("st").textContent=t, ui=$("ui");
+const base=location.origin+location.pathname;
+
+if(q.get("cam")) phoneMode(q.get("cam")); else pcMode();
+
+/* ---------- PC / receiver ---------- */
+function pcMode(){
+  let room=q.get("room")||localStorage.getItem("pcam-room");
+  if(!room){room="pc"+Array.from(crypto.getRandomValues(new Uint8Array(10)),b=>b.toString(36).padStart(2,"0")).join("");}
+  try{localStorage.setItem("pcam-room",room)}catch(e){}
+  const link=base+"?cam="+room;
+  ui.innerHTML='<b>Scan with your iPhone camera</b><div id="qr"></div><br><input readonly value="'+link+'" onclick="this.select()"><br><small>Keep this link private. Bookmark it on the iPhone for next time.</small><br><button id="hide">Hide panel</button>';
+  new QRCode($("qr"),{text:link,width:180,height:180});
+  $("hide").onclick=()=>ui.classList.add("min");
+  const rv=$("rv");rv.addEventListener("click",()=>ui.classList.toggle("min"));
+  function start(){
+    const peer=new Peer(room);
+    peer.on("open",()=>st("ready, waiting for phone"));
+    let cur,timer;
+    peer.on("call",call=>{
+      if(cur&&cur!==call)cur.close();cur=call;clearTimeout(timer);call.answer();
+      call.on("stream",s=>{if(rv.srcObject!==s)rv.srcObject=s;rv.play().catch(()=>{});ui.classList.add("min");st("phone connected")});
+      call.on("close",()=>{if(cur!==call)return;timer=setTimeout(()=>{st("phone disconnected");ui.classList.remove("min")},5000)})});
+    peer.on("disconnected",()=>peer.reconnect());
+    peer.on("error",e=>{st("error: "+e.type);if(e.type==="unavailable-id"){peer.destroy();setTimeout(start,4000)}});
+  }
+  start();
+}
+
+/* ---------- iPhone / camera ---------- */
+function phoneMode(room){
+  let facing="environment",stream,peer,call,lv=$("lv");
+  $("rv").style.display="none";lv.style.display="block";
+  ui.innerHTML='<button id="go">Start camera</button><button id="flip">Flip camera</button><br><small>Keep this screen open while streaming.</small>';
+  async function cam(){
+    if(stream)stream.getTracks().forEach(t=>t.stop());
+    const tries=[{video:{facingMode:facing,width:{ideal:1280},height:{ideal:720},frameRate:{ideal:30}},audio:true},{video:{facingMode:facing},audio:false}];
+    let last;for(const c of tries){try{stream=await navigator.mediaDevices.getUserMedia(c);lv.srcObject=stream;lv.play().catch(()=>{});return true}catch(e){last=e}}
+    st("camera error: "+last.name+" (framed="+(window.top!==window)+")");return false;
+  }
+  let retry,gen=0;
+  function later(){clearTimeout(retry);retry=setTimeout(connect,3000)}
+  function connect(){
+    clearTimeout(retry);const my=++gen;
+    if(call)call.close();if(peer)peer.destroy();
+    peer=new Peer();
+    peer.on("open",()=>{if(my!==gen)return;call=peer.call(room,stream);st("calling PC...");
+      call.on("close",()=>{if(my!==gen)return;st("disconnected, retrying");later()})});
+    peer.on("error",e=>{if(my!==gen)return;st("error: "+e.type+", retrying");later()});
+  }
+  $("go").onclick=async()=>{if(await cam()){connect();ui.classList.add("min");
+    try{await navigator.wakeLock.request("screen")}catch(e){}}};
+  $("flip").onclick=async()=>{facing=facing==="user"?"environment":"user";if(await cam())connect()};
+  lv.addEventListener("click",()=>ui.classList.toggle("min"));
+}
+</script></body></html>
